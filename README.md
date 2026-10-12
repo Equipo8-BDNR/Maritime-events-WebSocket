@@ -29,26 +29,83 @@ A continuación se presenta un ejemplo de la estructura del mensaje con MessageT
 
   "MetaData": // Datos generales de la embarcación
   { 
-    "MMSI": 235092800,             // Numérico (Entero): Identificador único de 9 dígitos de la embarcación
-    "ShipName": "OCEAN VOYAGER",    // Texto Libre: Nombre registrado del buque
-    "latitude": 25.7617,           // Numérico (Flotante): Latitud en grados decimales (-90 a 90)
-    "longitude": -80.1918,         // Numérico (Flotante): Longitud en grados decimales (-180 a 180)
-    "time_utc": "2026-10-10T14:30:00Z" // Serie Temporal: Fecha/hora UTC de recepción del reporte
+    "MMSI": 311002056,             // Numérico (Entero): Identificador único de 9 dígitos de la embarcación
+    "ShipName": "LEMANIA",    // Texto Libre: Nombre registrado del buque
+    "latitude": 38.7398,           // Numérico (Flotante): Latitud en grados decimales (-90 a 90)
+    "longitude": 14.81916,         // Numérico (Flotante): Longitud en grados decimales (-180 a 180)
+    "time_utc": "2026-10-12 05:14:13.502595905 +0000 UTC" // Serie Temporal: Fecha/hora UTC de recepción del reporte
   },
 
   "Message": 
   {
     "PositionReport": 
     {
-      "Sog": 12.4,                 // Numérico (Flotante): Speed Over Ground / Velocidad en nudos
-      "Cog": 185.2,                // Numérico (Flotante): Course Over Ground / Rumbo en grados (0-359.9)
-      "TrueHeading": 186,          // Numérico (Entero): Dirección real de proa (511 = No disponible)
+      "Sog": 10.4,                 // Numérico (Flotante): Speed Over Ground / Velocidad en nudos
+      "Cog": 272.3,                // Numérico (Flotante): Course Over Ground / Rumbo en grados (0-359.9)
+      "TrueHeading": 273,          // Numérico (Entero): Dirección real de proa (511 = No disponible)
       "NavigationalStatus": 0      // Categoría/Cualitativo: Estado (ej. 0 = Bajo motor, 1 = Fondeado)
     }
   }
 }
 ```
-> Ejemplo ilustrativo. Pendiente de verificar contra un mensaje real capturado del stream (por ejemplo, el formato exacto de `time_utc`). Se reemplazará por un mensaje real capturado del stream, que guardaremos en `samples/`.
+> Ejemplo real capturado del stream (abreviado: el mensaje completo trae más campos). Los mensajes completos de `PositionReport` y `ShipStaticData` están en `samples/`.
+
+#### Atributos de los mensajes capturados
+La siguiente tabla define cada atributo de los dos tipos de mensaje con los que trabaja el proyecto (`PositionReport` y `ShipStaticData`) y de su `MetaData`. La columna *Clase* indica si es cuantitativa, cualitativa, texto no estructurado, temporal o identificador. Los rangos y frecuencias provienen de la captura de la sección 5. Los valores marcados como "no disponible" son valores centinela del estándar AIS y deben tratarse como nulos.
+
+**`MetaData`** (viene en todos los mensajes de barcos)
+
+| Atributo | Tipo | Clase | Significado | Valores especiales / observaciones |
+|---|---|---|---|---|
+| `MMSI` | Entero | Identificador | Maritime Mobile Service Identity: código de 9 dígitos que identifica al transmisor AIS. | Se observaron valores 0 (inválidos). |
+| `MMSI_String` | Entero | Identificador | Mismo MMSI que el campo anterior. | A pesar del nombre, en la captura llega como número. |
+| `ShipName` | Texto | Texto no estructurado | Nombre del barco, máximo 20 caracteres. | Rellenado con espacios al final; vacío en 0.7 % de las posiciones. |
+| `latitude` | Decimal | Cuantitativa | Latitud en grados decimales (WGS-84). | Rango observado: -76.9 a 71.6. |
+| `longitude` | Decimal | Cuantitativa | Longitud en grados decimales (WGS-84). | Rango observado: -175.2 a 177.4. |
+| `time_utc` | Texto (fecha-hora) | Temporal | Momento UTC en que AISStream recibió el mensaje, con precisión de nanosegundos. | Formato `2026-10-12 05:14:13.502595905 +0000 UTC` (no es ISO-8601). |
+
+**`PositionReport`** (Mensajes AIS 1, 2 y 3; 48,366 mensajes en la captura)
+
+| Atributo | Tipo | Clase | Significado | Valores especiales / observaciones |
+|---|---|---|---|---|
+| `MessageID` | Entero | Cualitativa | Número del mensaje AIS: 1 (programado), 2 (asignado) o 3 (en respuesta a una interrogación). | Observado: 1 (64 %), 3 (35 %), 2 (1 %). |
+| `RepeatIndicator` | Entero 0-3 | Cuantitativa (discreta) | Veces que el mensaje fue retransmitido por repetidores. | 3 = no repetir más. |
+| `UserID` | Entero | Identificador | MMSI del barco que emite el reporte. | Igual a `MetaData.MMSI`. |
+| `Valid` | Booleano | Cualitativa | Indica si el mensaje decodificó correctamente. | Siempre `true` en la captura. |
+| `NavigationalStatus` | Entero 0-15 | Cualitativa | Estado de navegación declarado por la tripulación. | 0 = bajo motor, 1 = fondeado, 2 = sin gobierno, 3 = maniobra restringida, 4 = limitado por calado, 5 = amarrado, 6 = varado, 7 = pescando, 8 = navegando a vela, 11 = remolcando a popa, 12 = empujando o remolcando al costado, 14 = baliza AIS-SART activa, 15 = no definido (7.4 % de las posiciones). |
+| `RateOfTurn` | Entero | Cuantitativa | Velocidad de giro codificada (0 = sin giro; el signo indica la dirección). | -128 = no disponible (41 % de las posiciones); ±127 = girando a más de 5° cada 30 s. |
+| `Sog` | Decimal | Cuantitativa | Speed Over Ground: velocidad sobre el fondo, en nudos, con resolución de 0.1. | 102.3 = no disponible (0.3 %). |
+| `PositionAccuracy` | Booleano | Cualitativa | Precisión de la posición: `true` = alta (menos de 10 m), `false` = baja. | `true` en el 60 % de los reportes. |
+| `Longitude` | Decimal | Cuantitativa | Longitud en grados decimales. | 181 = no disponible. |
+| `Latitude` | Decimal | Cuantitativa | Latitud en grados decimales. | 91 = no disponible. |
+| `Cog` | Decimal | Cuantitativa | Course Over Ground: rumbo sobre el fondo, en grados (0 a 359.9). | 360 = no disponible (20 %). |
+| `TrueHeading` | Entero | Cuantitativa | Dirección real de la proa, en grados (0 a 359). | 511 = no disponible (43 %). |
+| `Timestamp` | Entero 0-63 | Temporal | Segundo UTC del minuto en que el barco generó la posición (no es una fecha completa). | 60 = no disponible (4.3 %); 61 = ingreso manual; 62 = estimada (dead reckoning); 63 = sistema de posicionamiento inoperativo. |
+| `SpecialManoeuvreIndicator` | Entero | Cualitativa | Indica si el barco realiza una maniobra especial. | 0 = no disponible, 1 = no realiza maniobra, 2 = realiza maniobra; 3 = reservado (se observó 48 veces). |
+| `Spare` | Entero | Sin significado | Bits de relleno del protocolo. | Se ignora. |
+| `Raim` | Booleano | Cualitativa | Receiver Autonomous Integrity Monitoring: `true` si el receptor GPS verifica la integridad de su posición. | |
+| `CommunicationState` | Entero | Cuantitativa (técnica) | Estado de sincronización y de franjas de tiempo de la radio (SOTDMA/ITDMA). | Útil solo para análisis de la red de radio. |
+
+**`ShipStaticData`** (Mensaje AIS 5; 8,746 mensajes en la captura)
+
+| Atributo | Tipo | Clase | Significado | Valores especiales / observaciones |
+|---|---|---|---|---|
+| `MessageID` | Entero | Cualitativa | Número del mensaje AIS. | Siempre 5. |
+| `RepeatIndicator` | Entero 0-3 | Cuantitativa (discreta) | Veces que el mensaje fue retransmitido por repetidores. | |
+| `UserID` | Entero | Identificador | MMSI del barco. | Igual a `MetaData.MMSI`. |
+| `Valid` | Booleano | Cualitativa | Indica si el mensaje decodificó correctamente. | Siempre `true` en la captura. |
+| `AisVersion` | Entero 0-3 | Cualitativa | Versión del estándar ITU-R M.1371 que cumple el equipo AIS del barco. | Observado: 0, 1 y 2. |
+| `ImoNumber` | Entero | Identificador | Número IMO del barco (7 dígitos), único y permanente del casco. | 0 = no disponible (47.6 %). |
+| `CallSign` | Texto | Texto no estructurado | Indicativo de llamada de radio (hasta 7 caracteres). | Vacío en 2.1 %. |
+| `Name` | Texto | Texto no estructurado | Nombre del barco (hasta 20 caracteres). | Vacío en 0.1 %. |
+| `Type` | Entero 0-99 | Cualitativa | Código de tipo de barco y carga. | 0 = no disponible; 30 = pesca; 31-32 = remolque; 35 = militar; 36 = vela; 37 = recreo; 50 = piloto; 51 = búsqueda y rescate; 52 = remolcador; 60-69 = pasajeros; 70-79 = carga; 80-89 = tanque; 90-99 = otros. Más frecuentes: 70, 52, 79, 37, 80. |
+| `Dimension` | Objeto `A`, `B`, `C`, `D` | Cuantitativa | Dimensiones en metros, medidas desde la antena GPS: `A` hacia la proa, `B` hacia la popa, `C` hacia babor, `D` hacia estribor. Eslora = A + B; manga = C + D. | 0 = no disponible (las cuatro en cero: 2.4 %). Máximos observados: A 511, B 333, C 63, D 63. |
+| `MaximumStaticDraught` | Decimal | Cuantitativa | Calado máximo del barco en metros, con resolución de 0.1. | 0 = no disponible (18 %); máximo observado 25.5. |
+| `Destination` | Texto | Texto no estructurado | Destino declarado por la tripulación (hasta 20 caracteres). | Vacío en 14 %; abreviaturas y errores frecuentes. |
+| `Eta` | Objeto `Month`, `Day`, `Hour`, `Minute` | Temporal | Llegada estimada al destino, declarada por la tripulación. No incluye año. | No disponible: mes 0, día 0, hora 24, minuto 60; también se observa `0/0/0/0`. Juntos suman 26 % de los registros. |
+| `FixType` | Entero 0-15 | Cualitativa | Tipo de dispositivo de posicionamiento: 1 = GPS, 2 = GLONASS, 3 = GPS/GLONASS combinado, 6 = sistema de navegación integrado, 7 = topografía (surveyed), 8 = Galileo. | 0 y 15 = no definido (alrededor del 38 %). |
+| `Dte` | Booleano | Cualitativa | Bit DTE (Data Terminal Equipment) del estándar: `false` = terminal de datos disponible, `true` = no disponible. | `true` en 2.7 %. |
+| `Spare` | Booleano | Sin significado | Bit de relleno del protocolo. | Se ignora. |
 
 ### Catálogo de Tipos de Mensajes de AIS Stream
 Se enlistan los tipos de mensajes y una descripción, se tomó en cuenta la división que presenta el stream para hacer la lista. Los 4 modelos de *Envelope* describen el protocolo y no cuentan entre los 25 tipos de mensaje filtrables.
@@ -74,7 +131,7 @@ Mensajes de geolocalización e indicadores dinámicos de movimiento de embarcaci
 #### Static and Voyage (Datos del Buque y Travesía)
 Información administrativa, física y logística sobre la embarcación y su ruta comercial.
 
-* **`ShipStaticData`**: Datos estáticos y de travesía del buque (Mensaje AIS 5). Contiene el nombre del barco (`ShipName`), número IMO, tipo de nave (`Type`), dimensiones físicas (`Dimension`), puerto de destino (`Destination`) y tiempo estimado de llegada (`Eta`).
+* **`ShipStaticData`**: Datos estáticos y de travesía del buque (Mensaje AIS 5). Contiene el nombre del barco (`Name`), número IMO, tipo de nave (`Type`), dimensiones físicas (`Dimension`), puerto de destino (`Destination`) y tiempo estimado de llegada (`Eta`).
 * **`StaticDataReport`**: Reporte en dos partes que transmite los metadatos estáticos de embarcaciones con transceptores Clase B (Mensaje AIS 24).
 
 #### Binary Data (Cargas Útiles de Datos Binarios)
@@ -108,23 +165,22 @@ Alertas críticas, acuses de recibo y comunicaciones de emergencia marítima.
 
 
 ### Clasificación de Variables
-Se presentan algunas de las variables que podemos encontrar dentro de los *Message* y *MetaData*.
+Se presentan algunas de las variables que podemos encontrar dentro de los *Message* y *MetaData*. La clasificación completa de los atributos de `PositionReport`, `ShipStaticData` y `MetaData` está en la columna *Clase* de las tablas del diccionario.
 
 * **Variables Cuantitativas:**
   * `latitude`, `longitude` (Coordenadas geográficas).
   * `Sog` (Velocidad en nudos).
   * `Cog`, `TrueHeading` (Ángulos de dirección/rumbo).
   * `Dimension.A`, `Dimension.B`, `Dimension.C`, `Dimension.D` (Dimensiones físicas de la nave en metros).
-  * `Draught` (Calado del barco).
+  * `MaximumStaticDraught` (Calado máximo del barco, en *ShipStaticData*).
 
 * **Variables Cualitativas:**
   * `MessageType` (Tipo de evento).
   * `NavigationalStatus` (Estado de navegación).
-  * `ShipType` / `Type` (Categoría de buque).
-  * `CargoType` (Tipo de carga declarada).
+  * `Type` (Categoría de buque, código numérico en *ShipStaticData*).
 
 * **Texto No Estructurado:**
-  * `ShipName` (Nombre comercial o registrado).
+  * `ShipName` (en *MetaData*) / `Name` (en *ShipStaticData*): nombre comercial o registrado.
   * `Destination` (Destino en texto abierto ingresado por la tripulación; suele contener tipografía errónea o abreviaturas no estandarizadas).
   * `CallSign` (Indicativo de llamada de radio).
 
@@ -147,7 +203,9 @@ Se presentan algunas de las variables que podemos encontrar dentro de los *Messa
 
 ## 3. Integrantes
 
-* _(completar con los nombres del equipo)_
+* Lucas Garcia Arredondo
+* Tania Dominguez
+* Alvaro Zunzunegui
 
 ## 4. Cómo correrlo (Etapa 1)
 
@@ -166,3 +224,26 @@ Notas del servicio (según su documentación):
 * La suscripción debe enviarse dentro de los 3 segundos posteriores a abrir la conexión.
 * Máximo 3 conexiones por cuenta y 3 por IP.
 * Se debe habilitar `permessage-deflate`; desde septiembre de 2026 las conexiones sin compresión tienen límite de ancho de banda.
+
+## 5. Muestra capturada (referencia)
+
+Captura de 10 minutos con cobertura global (`BoundingBoxes` de todo el mundo) y solo `PositionReport` y `ShipStaticData`, hecha con `scripts/capture.py` (12-oct-2026). El archivo crudo se guarda en `data/` y no se sube al repositorio.
+
+| Métrica | Valor |
+|---|---|
+| Mensajes recibidos | 57,113 en 611 s (≈ 93 mensajes/s, estable) |
+| `PositionReport` / `ShipStaticData` | 48,366 / 8,746 (≈ 5.5 a 1) |
+| Embarcaciones distintas (MMSI) | 18,207 |
+| Tamaño del JSON crudo | ≈ 32 MB (≈ 190 MB/hora, ≈ 4.6 GB/día) |
+
+Observaciones de calidad de datos en la muestra:
+
+* `TrueHeading = 511` (no disponible) en el 42.6 % de los `PositionReport`; `Cog = 360` (no disponible) en el 19.9 %.
+* `Timestamp ≥ 60` (no disponible) en el 4.3 % de los `PositionReport`.
+* `Destination` vacío en el 14.0 % de los `ShipStaticData`.
+* `Eta` sin valor real en el 26 % de los `ShipStaticData` (`0/0/24/60`: 16 %, `0/0/0/0`: 10 %); además no incluye año.
+* `RateOfTurn = -128` (no disponible) en el 41 % de los `PositionReport`.
+* `ImoNumber = 0` en el 47.6 % y `MaximumStaticDraught = 0` en el 18.2 % de los `ShipStaticData`; `UserID`/`MMSI` = 0 aparece en algunos mensajes.
+* `ShipName` en *MetaData* viene rellenado con espacios al final (20 caracteres); hay que aplicar `strip`.
+* `time_utc` no es ISO-8601 (ejemplo: `2026-10-12 05:14:13.502595905 +0000 UTC`) y tiene precisión de nanosegundos.
+* El primer mensaje del stream es un `SubscriptionConfirmation`, no un evento marítimo.
