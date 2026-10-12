@@ -3,7 +3,8 @@
 ## 1. Enlaces a las APIs y Documentación
 * **Sitio oficial / Documentación de API:** [https://aisstream.io](https://aisstream.io)
 * **Documentación WebSocket:** [https://aisstream.io/documentation](https://aisstream.io/documentation)
-* **APIs del Stream:** [https://aisstream.io/account)](https://aisstream.io/account)
+* **APIs del Stream (generación de API key):** [https://aisstream.io/account](https://aisstream.io/account)
+* **Endpoint del stream:** `wss://stream.aisstream.io/v0/stream`
 
 ## 2. Descripción del Stream de Datos
 
@@ -14,15 +15,15 @@ El stream produce transmisiones en tiempo real de la localización y otros datos
 El stream es operado por la plataforma **AISStream.io**, la cual agrega datos transmitidos por transceptores **AIS (Automatic Identification System)** de barcos, capturados por estaciones base terrestres y receptores satelitales a nivel mundial.
 
 ### Diccionario de Datos
-En el stream hay 25 tipos de mensaje JSON todos estos tienen las etiquetas "MessageType", "Metadata" y "Message". No todos son de eventos maritimos, algunos son respuestas del sistema estos no contienen la información de la embarcación dentro de *Metadata*.
+En el stream hay 25 tipos de mensaje JSON (los que se pueden pedir con `FilterMessageTypes`), todos estos tienen las etiquetas "MessageType", "MetaData" y "Message". No todos son de eventos maritimos, algunos son respuestas del sistema estos no contienen la información de la embarcación dentro de *MetaData*.
 
 * *MessageType:* Esta nos dice el tipo de mensaje que contiene el JSON.
-* *Metadata:* Se encuentra la identidad básica del barco y la posición global.
+* *MetaData:* Se encuentra la identidad básica del barco y la posición global.
 * *Message:* Son los datos específicos del tipo de mensaje (se eligen de acuerdo con el MessageType).
 
 A continuación se presenta un ejemplo de la estructura del mensaje con MessageType *PositionReport*
 
-```bash
+```jsonc
 {
   "MessageType": "PositionReport", // Tipo de evento 
 
@@ -47,8 +48,10 @@ A continuación se presenta un ejemplo de la estructura del mensaje con MessageT
   }
 }
 ```
+> Ejemplo ilustrativo. Pendiente de verificar contra un mensaje real capturado del stream (por ejemplo, el formato exacto de `time_utc`). Se reemplazará por un mensaje real capturado del stream, que guardaremos en `samples/`.
+
 ### Catálogo de Tipos de Mensajes de AIS Stream
-Se enlistan los tipos de mensajes y una descripción, se tomó en cuenta la división que presenta el stream para hacer la lista.
+Se enlistan los tipos de mensajes y una descripción, se tomó en cuenta la división que presenta el stream para hacer la lista. Los 4 modelos de *Envelope* describen el protocolo y no cuentan entre los 25 tipos de mensaje filtrables.
 
 #### Envelope (Control y Suscripción)
 Mensajes orientados a la gestión del protocolo de conexión WebSocket y notificaciones administrativas del sistema.
@@ -66,14 +69,12 @@ Mensajes de geolocalización e indicadores dinámicos de movimiento de embarcaci
 * **`StandardClassBPositionReport`**: Reporte simplificado de posición emitido por embarcaciones más pequeñas o de recreo que utilizan equipamiento AIS Clase B (Mensaje AIS 18).
 * **`ExtendedClassBPositionReport`**: Reporte extendido para Clase B que añade características adicionales del barco a los datos de posición (Mensaje AIS 19).
 * **`StandardSearchAndRescueAircraftReport`**: Reporte de posición emitido por aeronaves dedicadas a misiones de Búsqueda y Rescate (SAR / Mensaje AIS 9).
-* **`AidsToNavigationReport`**: Información enviada por balizas, faros o boyas de señalización (AtoN / Mensaje AIS 21), indicando su ubicación y estado.
+* **`LongRangeAisBroadcastMessage`**: Datos de posición y estado optimizados para ser capturados por satélites u otros sistemas de largo alcance (Mensaje AIS 27).
 
 #### Static and Voyage (Datos del Buque y Travesía)
 Información administrativa, física y logística sobre la embarcación y su ruta comercial.
 
 * **`ShipStaticData`**: Datos estáticos y de travesía del buque (Mensaje AIS 5). Contiene el nombre del barco (`ShipName`), número IMO, tipo de nave (`Type`), dimensiones físicas (`Dimension`), puerto de destino (`Destination`) y tiempo estimado de llegada (`Eta`).
-* **`DataLinkManagementMessage`**: Datos técnicos de asignación e intercalado de franjas horarias de radio (Slots TDMA / Mensaje AIS 20) para el mantenimiento del enlace de datos marítimo.
-* **`GroupAssignmentCommand`**: Instrucciones enviadas a un grupo de barcos para definir sus intervalos de transmisión o frecuencias (Mensaje AIS 23).
 * **`StaticDataReport`**: Reporte en dos partes que transmite los metadatos estáticos de embarcaciones con transceptores Clase B (Mensaje AIS 24).
 
 #### Binary Data (Cargas Útiles de Datos Binarios)
@@ -84,24 +85,30 @@ Mensajes orientados a la transmisión de datos personalizados o estructurados en
 * **`BinaryBroadcastMessage`**: Emisión generalizada de datos binarios difundida a todas las estaciones en rango (Mensaje AIS 8).
 * **`SingleSlotBinaryMessage`**: Mensaje binario compacto de longitud reducida enviado en un solo segmento de tiempo (Mensaje AIS 25).
 * **`MultiSlotBinaryMessage`**: Mensaje binario extenso enviado a través de múltiples segmentos de tiempo consecutivos (Mensaje AIS 26).
+* **`GnssBroadcastBinaryMessage`**: Difusión de correcciones diferenciales GNSS desde una estación base para mejorar la precisión de las posiciones (Mensaje AIS 17).
 
 #### Network and Control (Gestión de Red y Canales)
 Comandos del sistema para la gestión del espectro radioeléctrico y asignación de frecuencias.
 
-* **`Interrogation`**: Solicitud enviada por una estación base o barco para requerir datos específicos a otra nave (Mensaje AIS 10).
+* **`Interrogation`**: Solicitud enviada por una estación base o barco para requerir datos específicos a otra nave (Mensaje AIS 15).
 * **`ChannelManagement`**: Instrucciones para cambiar de canal de transmisión de radiofrecuencia VHF dentro de una zona geográfica definida (Mensaje AIS 22).
+* **`DataLinkManagementMessage`**: Datos técnicos de asignación e intercalado de franjas horarias de radio (Slots TDMA / Mensaje AIS 20) para el mantenimiento del enlace de datos marítimo.
+* **`GroupAssignmentCommand`**: Instrucciones enviadas a un grupo de barcos para definir sus intervalos de transmisión o frecuencias (Mensaje AIS 23).
+* **`DataLinkManagementMessageData`**: Sub-estructura de datos del `DataLinkManagementMessage` (bloques de franjas reservadas).
+* **`AssignedModeCommand`**: Comando de una estación base que asigna a una nave su franja de transmisión (Mensaje AIS 16).
+* **`CoordinatedUTCInquiry`**: Consulta de fecha y hora UTC dirigida a otra estación (Mensaje AIS 10).
+* **`UnknownMessage`**: Mensaje AIS que el stream no pudo clasificar en ninguno de los demás tipos.
 
 #### Safety (Seguridad y Alertas)
 Alertas críticas, acuses de recibo y comunicaciones de emergencia marítima.
 
-* **`AddressedSafetyRelatedMessage`**: Notificación de seguridad dirigida específicamente a un receptor en particular (Mensaje AIS 12).
-* **`SafetyRelatedAcknowledge`**: Acuse de recibo que confirma la lectura de un mensaje de seguridad direccionado (Mensaje AIS 13).
-* **`SafetyRelatedBroadcastMessage`**: Alerta o aviso de seguridad marítima emitido en abierto a todos los barcos en la zona (Mensaje AIS 14).
-* **`LongRangeAisBroadcastMessage`**: Datos de posición y estado optimizados para ser capturados por satélites u otros sistemas de largo alcance (Mensaje AIS 27).
+* **`AddressedSafetyMessage`**: Notificación de seguridad dirigida específicamente a un receptor en particular (Mensaje AIS 12).
+* **`SafetyBroadcastMessage`**: Alerta o aviso de seguridad marítima emitido en abierto a todos los barcos en la zona (Mensaje AIS 14).
+* **`AidsToNavigationReport`**: Información enviada por balizas, faros o boyas de señalización (AtoN / Mensaje AIS 21), indicando su ubicación y estado.
 
 
 ### Clasificación de Variables
-Se presentan algunas de las variables que podemos encontrar dentro de los *Message* y *Metadata*.
+Se presentan algunas de las variables que podemos encontrar dentro de los *Message* y *MetaData*.
 
 * **Variables Cuantitativas:**
   * `latitude`, `longitude` (Coordenadas geográficas).
@@ -122,7 +129,9 @@ Se presentan algunas de las variables que podemos encontrar dentro de los *Messa
   * `CallSign` (Indicativo de llamada de radio).
 
 * **Series Temporales:**
-  * `time_utc` / `Timestamp` (Marca de tiempo en milisegundos o ISO-8601 que registra exactamente cuándo ocurrió o se procesó la posición).
+  * `time_utc` (en *MetaData*: marca de tiempo UTC de recepción del mensaje en el stream).
+  * `Timestamp` (en *PositionReport*: solo el segundo UTC del minuto, 0-59, en que el barco generó la posición; **no** es una fecha completa).
+  * `Eta` (en *ShipStaticData*: llegada estimada declarada por la tripulación, como mes/día/hora/minuto, sin año).
 
 ### Consideraciones Éticas y Privacidad
 
@@ -130,3 +139,30 @@ Se presentan algunas de las variables que podemos encontrar dentro de los *Messa
 
 * **Calidad y Sesgo:** El campo `Destination` y otros campos son ingresados manualmente por operadores humanos, lo que introduce errores de tipeo y campos nulos.
 
+* **Cobertura desigual:** el stream depende de la red de receptores; hay zonas con mucha cobertura (costas, puertos) y otras casi sin ella (océano abierto), por lo que la ausencia de datos no implica ausencia de barcos.
+
+* **Datos no confiables por diseño:** el transmisor AIS puede apagarse o configurarse con datos falsos (identidad, posición). Los valores "no disponible" del protocolo (p. ej. `TrueHeading = 511`) deben tratarse como nulos y no como datos reales.
+
+* **Garantías del servicio:** AISStream no ofrece SLA ni reenvío de eventos perdidos; si el consumidor es lento, el servicio descarta mensajes. Esto limita las conclusiones sobre completitud.
+
+## 3. Integrantes
+
+* _(completar con los nombres del equipo)_
+
+## 4. Cómo correrlo (Etapa 1)
+
+```bash
+git clone https://github.com/Equipo8-BDNR/Maritime-events-WebSocket.git
+cd Maritime-events-WebSocket
+uv sync
+cp .env.example .env
+```
+
+Después se edita `.env` y se pone la API key propia (`AISSTREAM_API_KEY`). Cada integrante genera la suya en [https://aisstream.io/account](https://aisstream.io/account). El archivo `.env` está en `.gitignore` y la llave nunca se sube al repositorio. AISStream no permite conexiones directas desde el navegador: el consumidor corre del lado servidor.
+
+Notas del servicio (según su documentación):
+
+* La suscripción exige `BoundingBoxes`; `FiltersShipMMSI` y `FilterMessageTypes` son opcionales.
+* La suscripción debe enviarse dentro de los 3 segundos posteriores a abrir la conexión.
+* Máximo 3 conexiones por cuenta y 3 por IP.
+* Se debe habilitar `permessage-deflate`; desde septiembre de 2026 las conexiones sin compresión tienen límite de ancho de banda.
