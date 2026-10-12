@@ -247,3 +247,154 @@ Observaciones de calidad de datos en la muestra:
 * `ShipName` en *MetaData* viene rellenado con espacios al final (20 caracteres); hay que aplicar `strip`.
 * `time_utc` no es ISO-8601 (ejemplo: `2026-10-12 05:14:13.502595905 +0000 UTC`) y tiene precisión de nanosegundos.
 * El primer mensaje del stream es un `SubscriptionConfirmation`, no un evento marítimo.
+
+## 6. Etapa 2: Infraestructura y arquitectura
+
+### 6.1 Arquitectura general
+
+```mermaid
+flowchart LR
+    A["AISStream.io<br/>WebSocket"] --> B["Consumidor<br/>(Etapa 3)"]
+    B -->|"escritura QUORUM<br/>rol ais_ingest"| C
+    subgraph C["Cassandra 4.1: 4 nodos, RF=3, keyspace ais"]
+        direction LR
+        n1["cassandra1<br/>rack1"]
+        n2["cassandra2<br/>rack2"]
+        n3["cassandra3<br/>rack3"]
+        n4["cassandra4<br/>rack4"]
+    end
+    C -->|"lectura<br/>rol ais_analyst"| D["Spark 3.5.7<br/>master + worker"]
+    D --> E["Delta Lake 3.2.0<br/>Bronze, Silver, Gold"]
+    E --> F["Consultas analíticas<br/>(Etapa 5)"]
+```
+
+| Capa | Tecnología | Versión | Función |
+|---|---|---|---|
+| Ingesta y estado operativo | Apache Cassandra | 4.1 (4 nodos) | Almacena el estado actual de cada barco y su historial reciente; optimizada para escritura |
+| Procesamiento analítico (OLAP) | Apache Spark + Delta Lake (lakehouse) | Spark 3.5.7, Delta 3.2.0, conector Cassandra 3.5.1 | Limpieza, enriquecimiento y agregaciones masivas |
+| Orquestación | Docker Compose | | Todo se levanta con los archivos de `infra/` |
+
+Los datos reales de la captura (sección 5) fijan los requisitos: unos **93 mensajes por segundo** (≈ 4.6 GB/día de JSON) y consultas por barco (su última posición y su historial).
+
+### 6.2 Por qué Cassandra para la ingesta
+
+| Criterio | Cassandra | MongoDB con sharding |
+|---|---|---|
+| Replicación y sharding | Vienen en el diseño: anillo de nodos con particionado por hash y réplicas por keyspace | Se arman aparte: replica sets, servidores de configuración y `mongos` |
+| Escritura rápida | Estructura LSM (se escribe en memoria y en un registro secuencial) | Buena, pero con más componentes en la ruta de escritura |
+| Contenedores mínimos | 3 a 4 | Alrededor de 10 |
+| Teorema CAP | AP con consistencia ajustable por consulta | CP por defecto |
+| Patrón de acceso | Consulta por llave (barco), ideal para "último estado" e historial por barco y día | Más flexible en consultas, innecesario aquí |
+
+Para el análisis masivo (agregaciones por zona, tipo de barco, tendencias) Cassandra no es adecuada, porque solo consulta eficientemente por llave de partición. Por eso esa parte se hace en Spark sobre Delta Lake.
+
+### 6.3 Replicación y sharding
+
+* **Sharding:** Cassandra reparte los datos por *partition key* con un anillo de hash. Cada nodo tiene 16 rangos (*vnodes*).
+* **Replicación:** el keyspace `ais` usa `NetworkTopologyStrategy` con factor de replicación **3** en el datacenter `dc1`. Cada nodo está en su propio *rack*, de modo que las 3 réplicas de un dato quedan en racks distintos.
+* **Por qué 4 nodos:** con 3 nodos y réplica 3, cada nodo guardaba el 100 % de los datos y el sharding no se podía observar. Con 4 nodos cada uno guarda cerca del 75 %.
+
+Evidencia (`nodetool status ais`):
+
+| Nodo | Rack | Porcentaje de datos que guarda |
+|---|---|---|
+| cassandra1 | rack1 | 74.7 % |
+| cassandra2 | rack2 | 74.7 % |
+| cassandra3 | rack3 | 77.4 % |
+| cassandra4 | rack4 | 73.2 % |
+
+Evidencia (`nodetool getendpoints ais vessel_latest <mmsi>`): cada barco vive en un subconjunto distinto de 3 de los 4 nodos. En 12 barcos de la muestra aparecieron 4 combinaciones distintas:
+
+| MMSI | Nodos que guardan al barco |
+|---|---|
+| 311002056 | cassandra1, cassandra2, cassandra4 |
+| 431002141 | cassandra1, cassandra2, cassandra3 |
+| 227975290 | cassandra2, cassandra3, cassandra4 |
+| 244050680 | cassandra1, cassandra3, cassandra4 |
+
+### 6.4 Modelo de datos
+
+El diseño parte de las consultas, no de los datos:
+
+| Tabla | Llave primaria | Consulta que resuelve |
+|---|---|---|
+| `ais.vessel_latest` | `mmsi` | Última posición conocida de un barco (lectura puntual con latencia mínima) |
+| `ais.position_by_vessel_day` | `((mmsi, day), event_time DESC, event_nanos DESC)` | Historial de un barco en un día, del más reciente al más antiguo |
+| `ais.vessel_static` | `mmsi` | Datos estáticos del barco (nombre, tipo, dimensiones, destino, ETA) |
+
+Decisiones de diseño:
+
+* **Estado actual con escritura idempotente:** `vessel_latest` se escribe con `USING TIMESTAMP` igual a la hora del evento. Si un mensaje llega desordenado, Cassandra conserva el más reciente (*last write wins* por hora del evento) y no el último en llegar.
+* **Historial acotado:** `position_by_vessel_day` tiene un TTL de 3 días y compactación `TimeWindowCompactionStrategy` con ventanas de 1 día, la adecuada para series de tiempo que expiran. El historial largo vive en el lakehouse.
+* **Valores crudos:** la capa de ingesta guarda los valores tal cual llegan (incluidos los centinela como `TrueHeading = 511`). La limpieza se hace en la capa analítica (Etapa 4), lo que permite mostrar la trazabilidad del dato.
+* **Hallazgo: colisión de llaves.** En la primera prueba, 1 de 48,366 posiciones se perdió: dos mensajes distintos del mismo barco llegaron con menos de 1 microsegundo de diferencia y el tipo `timestamp` de Cassandra solo tiene milisegundos, así que el segundo sobrescribió al primero. Se corrigió agregando `event_nanos` (los nanosegundos restantes) a la llave. Tras el cambio se guardan las 48,366.
+
+### 6.5 Control de accesos
+
+* La autenticación está activada desde el arranque (`PasswordAuthenticator` y `CassandraAuthorizer`).
+* El usuario por defecto `cassandra/cassandra` se deshabilita; se crea un superusuario propio, `ais_admin`.
+* El keyspace `system_auth`, que guarda los usuarios, se replica 3 veces (por defecto era 1; si caía ese nodo nadie podría entrar).
+* Las contraseñas se generan al azar con `setup_security.sh` y se guardan solo en `.env`, que está en `.gitignore`.
+* Los puertos de Cassandra y de Spark solo escuchan en `127.0.0.1`.
+
+| Rol | Permisos sobre el keyspace `ais` | Uso |
+|---|---|---|
+| `ais_admin` | Superusuario | Crear esquema y roles |
+| `ais_ingest` | `SELECT`, `MODIFY` | Consumidor que escribe el stream |
+| `ais_analyst` | `SELECT` | Spark y analistas (solo lectura) |
+
+El script comprueba automáticamente que `ais_ingest` puede escribir, que `ais_analyst` puede leer pero recibe *Unauthorized* al escribir, y que el usuario por defecto ya no puede entrar. Las 4 pruebas pasaron.
+
+### 6.6 Justificación según el teorema CAP
+
+**Prioridad: disponibilidad y tolerancia a particiones (AP), con consistencia ajustable.**
+
+* **Por qué disponibilidad:** AISStream no ofrece SLA ni reenvío de mensajes perdidos, y descarta mensajes si el consumidor es lento. Un mensaje que no se escribe a tiempo se pierde para siempre, así que la base de datos debe aceptar escrituras aun con un nodo caído o una partición de red.
+* **Por qué la consistencia inmediata es secundaria:** cada posición reemplaza a la anterior del mismo barco. Si dos réplicas difieren por unos instantes, converge sola (resolución por hora del evento) y el impacto es una posición con segundos de retraso, no un dato incorrecto.
+* **Ajuste por operación:** las escrituras y las lecturas puntuales usan `QUORUM`. Con réplica 3, `QUORUM` son 2 réplicas; como escritura (2) más lectura (2) es mayor que 3, una lectura siempre ve la última escritura confirmada. El clúster tolera la caída de **un** nodo sin perder disponibilidad. Si se cayeran más réplicas de un mismo dato, se puede bajar a `LOCAL_ONE` y aceptar consistencia eventual.
+* **Qué se sacrifica:** consultas ad hoc y joins, que no son eficientes en Cassandra y se resuelven en Spark.
+
+La capa analítica prioriza **consistencia** de lectura, porque Delta Lake ofrece transacciones ACID sobre los archivos.
+
+### 6.7 Capa analítica
+
+* Spark 3.5.7 en modo clúster (un *master* y un *worker* de 2 núcleos y 1.5 GB), con Delta Lake 3.2.0 y el conector de Cassandra 3.5.1 (compatible con Spark 3.5 y Cassandra 4.x/5.0).
+* Spark se conecta con el rol de solo lectura `ais_analyst`: aunque el código analítico tenga un error, no puede modificar la base de ingesta.
+* Arquitectura *medallion*: **Bronze** (copia fiel de lo ingestado, ya implementada), **Silver** (limpieza y normalización) y **Gold** (agregaciones para las consultas), estas dos últimas en la Etapa 4.
+* Prueba de humo (`spark/jobs/smoke_test.py`): lee las tablas de Cassandra, escribe `position_by_vessel_day` como tabla Delta y la vuelve a leer. Resultado: 17,028 barcos en `vessel_latest` y 48,366 filas en el historial, que coinciden entre Cassandra y Delta.
+
+### 6.8 Rendimiento preliminar de escritura
+
+Con un solo cliente en una laptop y consistencia `QUORUM`, el cargador de prueba (`scripts/load_sample.py`) logró unas **5,000 a 7,000 escrituras por segundo** en las tablas de posiciones, contra las 93 por segundo que genera el stream (margen de unas 50 veces). Es una medición preliminar; la prueba de carga formal, sin pérdida de mensajes y con fallos inyectados, se hará en la Etapa 3.
+
+### 6.9 Cómo levantar la infraestructura
+
+```bash
+cp .env.example .env
+docker compose -f infra/cassandra/docker-compose.yml up -d
+bash infra/cassandra/setup_security.sh
+bash infra/cassandra/apply_schema.sh
+uv run python scripts/capture.py 600
+uv run python scripts/load_sample.py
+docker compose --env-file .env -f infra/spark/docker-compose.yml up -d
+bash spark/submit.sh smoke_test.py
+```
+
+Antes del primer comando, en `.env` hay que poner la llave `AISSTREAM_API_KEY`. El clúster de Cassandra tarda unos minutos porque los nodos arrancan en secuencia. Se necesitan unos 7 GB de memoria asignados a Docker.
+
+### 6.10 Estructura del repositorio
+
+| Ruta | Contenido |
+|---|---|
+| `infra/cassandra/` | `docker-compose.yml`, `schema.cql`, `setup_security.sh`, `apply_schema.sh` |
+| `infra/spark/` | `docker-compose.yml` del clúster Spark |
+| `spark/` | `submit.sh` y los jobs en `spark/jobs/` |
+| `scripts/` | `capture.py` (captura del stream) y `load_sample.py` (carga de prueba) |
+| `samples/` | Mensajes reales de ejemplo |
+
+### 6.11 Pendiente para las siguientes etapas
+
+* Consumidor en vivo que desacople la lectura del WebSocket de la escritura a Cassandra, con prueba de carga y medición de mensajes recibidos contra persistidos (Etapa 3).
+* Pruebas de resiliencia: caída de un nodo y recuperación automática (Etapa 3).
+* Jobs de limpieza, enriquecimiento con datasets estáticos y transformación a Silver y Gold (Etapa 4).
+* Cinco consultas analíticas y análisis de trazabilidad del dato (Etapa 5).

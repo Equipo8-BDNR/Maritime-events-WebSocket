@@ -27,7 +27,7 @@ else
 ALTER KEYSPACE system_auth WITH replication = {'class': 'NetworkTopologyStrategy', 'dc1': 3};
 CREATE ROLE IF NOT EXISTS ais_admin WITH SUPERUSER = true AND LOGIN = true AND PASSWORD = '${CASSANDRA_ADMIN_PASSWORD}';
 CQL
-  for n in 1 2 3; do
+  for n in 1 2 3 4; do
     docker exec "ais-cassandra$n" nodetool repair -full system_auth >/dev/null
   done
   echo "==> Deshabilitando el usuario por defecto 'cassandra'"

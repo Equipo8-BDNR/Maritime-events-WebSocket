@@ -77,6 +77,26 @@ services:
       cassandra2:
         condition: service_healthy
 
+  cassandra4:
+    <<: *cassandra
+    container_name: ais-cassandra4
+    hostname: cassandra4
+    command: >
+      sh -c "sed -i
+      -e 's/^authenticator:.*/authenticator: PasswordAuthenticator/'
+      -e 's/^authorizer:.*/authorizer: CassandraAuthorizer/'
+      /etc/cassandra/cassandra.yaml && exec docker-entrypoint.sh cassandra -f"
+    environment:
+      <<: *cassandra-env
+      CASSANDRA_RACK: rack4
+    ports:
+      - "127.0.0.1:9045:9042"
+    volumes:
+      - cassandra4-data:/var/lib/cassandra
+    depends_on:
+      cassandra3:
+        condition: service_healthy
+
 networks:
   ais-net:
     name: ais-net
@@ -85,3 +105,4 @@ volumes:
   cassandra1-data:
   cassandra2-data:
   cassandra3-data:
+  cassandra4-data:
