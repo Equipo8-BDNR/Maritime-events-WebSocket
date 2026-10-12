@@ -1,0 +1,15 @@
+# secretos
+.env
+# python
+.venv/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+# macOS
+.DS_Store
+# datos y volúmenes locales
+data/
+mount/
+spark-warehouse/
+metastore_db/
+derby.log
