@@ -1,0 +1,41 @@
+{
+  "MetaData": {
+    "MMSI": 244850973,
+    "MMSI_String": 244850973,
+    "ShipName": "STRAHL O MATIC",
+    "latitude": 51.82603,
+    "longitude": 4.71951,
+    "time_utc": "2026-10-12 05:14:13.677822603 +0000 UTC"
+  },
+  "MessageType": "ShipStaticData",
+  "Message": {
+    "ShipStaticData": {
+      "AisVersion": 2,
+      "CallSign": "PF7953",
+      "Destination": "PAPENDRECHT",
+      "Dimension": {
+        "A": 8,
+        "B": 45,
+        "C": 6,
+        "D": 4
+      },
+      "Dte": true,
+      "Eta": {
+        "Day": 1,
+        "Hour": 1,
+        "Minute": 1,
+        "Month": 1
+      },
+      "FixType": 15,
+      "ImoNumber": 0,
+      "MaximumStaticDraught": 0,
+      "MessageID": 5,
+      "Name": "STRAHL O MATIC",
+      "RepeatIndicator": 0,
+      "Spare": false,
+      "Type": 33,
+      "UserID": 244850973,
+      "Valid": true
+    }
+  }
+}

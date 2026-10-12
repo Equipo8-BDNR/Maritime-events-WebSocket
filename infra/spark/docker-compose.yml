@@ -1,0 +1,40 @@
+name: ais-spark
+
+x-spark: &spark
+  image: apache/spark:3.5.7-scala2.12-java17-python3-ubuntu
+  restart: unless-stopped
+  networks:
+    - ais-net
+  environment:
+    CASSANDRA_ANALYST_PASSWORD: ${CASSANDRA_ANALYST_PASSWORD}
+  volumes:
+    - ../../data/lake:/lake
+    - ../../spark/jobs:/opt/jobs:ro
+
+services:
+  spark-master:
+    <<: *spark
+    container_name: ais-spark-master
+    hostname: spark-master
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master
+    ports:
+      - "127.0.0.1:8080:8080"
+
+  spark-worker:
+    <<: *spark
+    container_name: ais-spark-worker
+    hostname: spark-worker
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
+    environment:
+      CASSANDRA_ANALYST_PASSWORD: ${CASSANDRA_ANALYST_PASSWORD}
+      SPARK_WORKER_CORES: "2"
+      SPARK_WORKER_MEMORY: 1536m
+    ports:
+      - "127.0.0.1:8081:8081"
+    depends_on:
+      - spark-master
+
+networks:
+  ais-net:
+    external: true
+    name: ais-net

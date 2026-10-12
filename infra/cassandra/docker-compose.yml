@@ -1,0 +1,87 @@
+name: ais-cassandra
+
+x-cassandra: &cassandra
+  image: cassandra:4.1
+  restart: unless-stopped
+  networks:
+    - ais-net
+  environment: &cassandra-env
+    CASSANDRA_CLUSTER_NAME: ais-cluster
+    CASSANDRA_DC: dc1
+    CASSANDRA_ENDPOINT_SNITCH: GossipingPropertyFileSnitch
+    CASSANDRA_SEEDS: cassandra1
+    MAX_HEAP_SIZE: 512M
+    HEAP_NEWSIZE: 128M
+  healthcheck:
+    test: ["CMD-SHELL", "nodetool info 2>/dev/null | grep -q 'Native Transport active.*true'"]
+    interval: 15s
+    timeout: 10s
+    retries: 20
+    start_period: 60s
+
+services:
+  cassandra1:
+    <<: *cassandra
+    container_name: ais-cassandra1
+    hostname: cassandra1
+    command: >
+      sh -c "sed -i
+      -e 's/^authenticator:.*/authenticator: PasswordAuthenticator/'
+      -e 's/^authorizer:.*/authorizer: CassandraAuthorizer/'
+      /etc/cassandra/cassandra.yaml && exec docker-entrypoint.sh cassandra -f"
+    environment:
+      <<: *cassandra-env
+      CASSANDRA_RACK: rack1
+    ports:
+      - "127.0.0.1:9042:9042"
+    volumes:
+      - cassandra1-data:/var/lib/cassandra
+
+  cassandra2:
+    <<: *cassandra
+    container_name: ais-cassandra2
+    hostname: cassandra2
+    command: >
+      sh -c "sed -i
+      -e 's/^authenticator:.*/authenticator: PasswordAuthenticator/'
+      -e 's/^authorizer:.*/authorizer: CassandraAuthorizer/'
+      /etc/cassandra/cassandra.yaml && exec docker-entrypoint.sh cassandra -f"
+    environment:
+      <<: *cassandra-env
+      CASSANDRA_RACK: rack2
+    ports:
+      - "127.0.0.1:9043:9042"
+    volumes:
+      - cassandra2-data:/var/lib/cassandra
+    depends_on:
+      cassandra1:
+        condition: service_healthy
+
+  cassandra3:
+    <<: *cassandra
+    container_name: ais-cassandra3
+    hostname: cassandra3
+    command: >
+      sh -c "sed -i
+      -e 's/^authenticator:.*/authenticator: PasswordAuthenticator/'
+      -e 's/^authorizer:.*/authorizer: CassandraAuthorizer/'
+      /etc/cassandra/cassandra.yaml && exec docker-entrypoint.sh cassandra -f"
+    environment:
+      <<: *cassandra-env
+      CASSANDRA_RACK: rack3
+    ports:
+      - "127.0.0.1:9044:9042"
+    volumes:
+      - cassandra3-data:/var/lib/cassandra
+    depends_on:
+      cassandra2:
+        condition: service_healthy
+
+networks:
+  ais-net:
+    name: ais-net
+
+volumes:
+  cassandra1-data:
+  cassandra2-data:
+  cassandra3-data:

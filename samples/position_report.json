@@ -1,0 +1,32 @@
+{
+  "MetaData": {
+    "MMSI": 311002056,
+    "MMSI_String": 311002056,
+    "ShipName": "LEMANIA             ",
+    "latitude": 38.7398,
+    "longitude": 14.81916,
+    "time_utc": "2026-10-12 05:14:13.502595905 +0000 UTC"
+  },
+  "MessageType": "PositionReport",
+  "Message": {
+    "PositionReport": {
+      "MessageID": 1,
+      "RepeatIndicator": 0,
+      "UserID": 311002056,
+      "Valid": true,
+      "NavigationalStatus": 0,
+      "RateOfTurn": 0,
+      "Sog": 10.4,
+      "PositionAccuracy": false,
+      "Longitude": 14.819158333333332,
+      "Latitude": 38.739799999999995,
+      "Cog": 272.3,
+      "TrueHeading": 273,
+      "Timestamp": 8,
+      "SpecialManoeuvreIndicator": 0,
+      "Spare": 0,
+      "Raim": false,
+      "CommunicationState": 19000
+    }
+  }
+}
