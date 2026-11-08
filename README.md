@@ -1,5 +1,11 @@
 # Proyecto de Procesamiento en Tiempo Real: Maritime AIS Stream
 
+## Integrantes
+
+* Lucas Garcia Arredondo
+* Tania Dominguez
+* Alvaro Zunzunegui
+
 ## 1. Enlaces a las APIs y Documentación
 * **Sitio oficial / Documentación de API:** [https://aisstream.io](https://aisstream.io)
 * **Documentación WebSocket:** [https://aisstream.io/documentation](https://aisstream.io/documentation)
@@ -201,13 +207,7 @@ Se presentan algunas de las variables que podemos encontrar dentro de los *Messa
 
 * **Garantías del servicio:** AISStream no ofrece SLA ni reenvío de eventos perdidos; si el consumidor es lento, el servicio descarta mensajes. Esto limita las conclusiones sobre completitud.
 
-## 3. Integrantes
-
-* Lucas Garcia Arredondo
-* Tania Dominguez
-* Alvaro Zunzunegui
-
-## 4. Cómo correrlo (Etapa 1)
+## 3. Cómo correrlo (Etapa 1)
 
 ```bash
 git clone https://github.com/Equipo8-BDNR/Maritime-events-WebSocket.git
@@ -225,7 +225,7 @@ Notas del servicio (según su documentación):
 * Máximo 3 conexiones por cuenta y 3 por IP.
 * Se debe habilitar `permessage-deflate`; desde septiembre de 2026 las conexiones sin compresión tienen límite de ancho de banda.
 
-## 5. Muestra capturada (referencia)
+## 4. Muestra capturada (referencia)
 
 Captura de 10 minutos con cobertura global (`BoundingBoxes` de todo el mundo) y solo `PositionReport` y `ShipStaticData`, hecha con `scripts/capture.py` (12-oct-2026). El archivo crudo se guarda en `data/` y no se sube al repositorio.
 
@@ -248,9 +248,9 @@ Observaciones de calidad de datos en la muestra:
 * `time_utc` no es ISO-8601 (ejemplo: `2026-10-12 05:14:13.502595905 +0000 UTC`) y tiene precisión de nanosegundos.
 * El primer mensaje del stream es un `SubscriptionConfirmation`, no un evento marítimo.
 
-## 6. Etapa 2: Infraestructura y arquitectura
+## 5. Etapa 2: Infraestructura y arquitectura
 
-### 6.1 Arquitectura general
+### 5.1 Arquitectura general
 
 ```mermaid
 flowchart LR
@@ -276,7 +276,7 @@ flowchart LR
 
 Los datos reales de la captura (sección 5) fijan los requisitos: unos **93 mensajes por segundo** (≈ 4.6 GB/día de JSON) y consultas por barco (su última posición y su historial).
 
-### 6.2 Por qué Cassandra para la ingesta
+### 5.2 Por qué Cassandra para la ingesta
 
 | Criterio | Cassandra | MongoDB con sharding |
 |---|---|---|
@@ -288,7 +288,7 @@ Los datos reales de la captura (sección 5) fijan los requisitos: unos **93 mens
 
 Para el análisis masivo (agregaciones por zona, tipo de barco, tendencias) Cassandra no es adecuada, porque solo consulta eficientemente por llave de partición. Por eso esa parte se hace en Spark sobre Delta Lake.
 
-### 6.3 Replicación y sharding
+### 5.3 Replicación y sharding
 
 * **Sharding:** Cassandra reparte los datos por *partition key* con un anillo de hash. Cada nodo tiene 16 rangos (*vnodes*).
 * **Replicación:** el keyspace `ais` usa `NetworkTopologyStrategy` con factor de replicación **3** en el datacenter `dc1`. Cada nodo está en su propio *rack*, de modo que las 3 réplicas de un dato quedan en racks distintos.
@@ -312,7 +312,7 @@ Evidencia (`nodetool getendpoints ais vessel_latest <mmsi>`): cada barco vive en
 | 227975290 | cassandra2, cassandra3, cassandra4 |
 | 244050680 | cassandra1, cassandra3, cassandra4 |
 
-### 6.4 Modelo de datos
+### 5.4 Modelo de datos
 
 El diseño parte de las consultas, no de los datos:
 
@@ -329,7 +329,7 @@ Decisiones de diseño:
 * **Valores crudos:** la capa de ingesta guarda los valores tal cual llegan (incluidos los centinela como `TrueHeading = 511`). La limpieza se hace en la capa analítica (Etapa 4), lo que permite mostrar la trazabilidad del dato.
 * **Hallazgo: colisión de llaves.** En la primera prueba, 1 de 48,366 posiciones se perdió: dos mensajes distintos del mismo barco llegaron con menos de 1 microsegundo de diferencia y el tipo `timestamp` de Cassandra solo tiene milisegundos, así que el segundo sobrescribió al primero. Se corrigió agregando `event_nanos` (los nanosegundos restantes) a la llave. Tras el cambio se guardan las 48,366.
 
-### 6.5 Control de accesos
+### 5.5 Control de accesos
 
 * La autenticación está activada desde el arranque (`PasswordAuthenticator` y `CassandraAuthorizer`).
 * El usuario por defecto `cassandra/cassandra` se deshabilita; se crea un superusuario propio, `ais_admin`.
@@ -345,7 +345,7 @@ Decisiones de diseño:
 
 El script comprueba automáticamente que `ais_ingest` puede escribir, que `ais_analyst` puede leer pero recibe *Unauthorized* al escribir, y que el usuario por defecto ya no puede entrar. Las 4 pruebas pasaron.
 
-### 6.6 Justificación según el teorema CAP
+### 5.6 Justificación según el teorema CAP
 
 **Prioridad: disponibilidad y tolerancia a particiones (AP), con consistencia ajustable.**
 
@@ -356,18 +356,18 @@ El script comprueba automáticamente que `ais_ingest` puede escribir, que `ais_a
 
 La capa analítica prioriza **consistencia** de lectura, porque Delta Lake ofrece transacciones ACID sobre los archivos.
 
-### 6.7 Capa analítica
+### 5.7 Capa analítica
 
 * Spark 3.5.7 en modo clúster (un *master* y un *worker* de 2 núcleos y 1.5 GB), con Delta Lake 3.2.0 y el conector de Cassandra 3.5.1 (compatible con Spark 3.5 y Cassandra 4.x/5.0).
 * Spark se conecta con el rol de solo lectura `ais_analyst`: aunque el código analítico tenga un error, no puede modificar la base de ingesta.
 * Arquitectura *medallion*: **Bronze** (copia fiel de lo ingestado, ya implementada), **Silver** (limpieza y normalización) y **Gold** (agregaciones para las consultas), estas dos últimas en la Etapa 4.
 * Prueba de humo (`spark/jobs/smoke_test.py`): lee las tablas de Cassandra, escribe `position_by_vessel_day` como tabla Delta y la vuelve a leer. Resultado: 17,028 barcos en `vessel_latest` y 48,366 filas en el historial, que coinciden entre Cassandra y Delta.
 
-### 6.8 Rendimiento preliminar de escritura
+### 5.8 Rendimiento preliminar de escritura
 
 Con un solo cliente en una laptop y consistencia `QUORUM`, el cargador de prueba (`scripts/load_sample.py`) logró unas **5,000 a 7,000 escrituras por segundo** en las tablas de posiciones, contra las 93 por segundo que genera el stream (margen de unas 50 veces). Es una medición preliminar; la prueba de carga formal, sin pérdida de mensajes y con fallos inyectados, se hará en la Etapa 3.
 
-### 6.9 Cómo levantar la infraestructura
+### 5.9 Cómo levantar la infraestructura
 
 ```bash
 cp .env.example .env
@@ -382,7 +382,7 @@ bash spark/submit.sh smoke_test.py
 
 Antes del primer comando, en `.env` hay que poner la llave `AISSTREAM_API_KEY`. El clúster de Cassandra tarda unos minutos porque los nodos arrancan en secuencia. Se necesitan unos 7 GB de memoria asignados a Docker.
 
-### 6.10 Estructura del repositorio
+### 5.10 Estructura del repositorio
 
 | Ruta | Contenido |
 |---|---|
@@ -392,7 +392,7 @@ Antes del primer comando, en `.env` hay que poner la llave `AISSTREAM_API_KEY`. 
 | `scripts/` | `capture.py` (captura del stream) y `load_sample.py` (carga de prueba) |
 | `samples/` | Mensajes reales de ejemplo |
 
-### 6.11 Pendiente para las siguientes etapas
+### 5.11 Pendiente para las siguientes etapas
 
 * Consumidor en vivo que desacople la lectura del WebSocket de la escritura a Cassandra, con prueba de carga y medición de mensajes recibidos contra persistidos (Etapa 3).
 * Pruebas de resiliencia: caída de un nodo y recuperación automática (Etapa 3).
