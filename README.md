@@ -392,9 +392,231 @@ Antes del primer comando, en `.env` hay que poner la llave `AISSTREAM_API_KEY`. 
 | `scripts/` | `capture.py` (captura del stream) y `load_sample.py` (carga de prueba) |
 | `samples/` | Mensajes reales de ejemplo |
 
-### 5.11 Pendiente para las siguientes etapas
+## 6. Consumidor en tiempo real y persistencia desacoplada
 
-* Consumidor en vivo que desacople la lectura del WebSocket de la escritura a Cassandra, con prueba de carga y medición de mensajes recibidos contra persistidos (Etapa 3).
-* Pruebas de resiliencia: caída de un nodo y recuperación automática (Etapa 3).
-* Jobs de limpieza, enriquecimiento con datasets estáticos y transformación a Silver y Gold (Etapa 4).
-* Cinco consultas analíticas y análisis de trazabilidad del dato (Etapa 5).
+### 6.1 Objetivo
+
+Implementar un consumidor de eventos AIS en tiempo real que reciba los mensajes provenientes de AISStream mediante WebSocket y los almacene en Cassandra.
+
+Para evitar que la recepción de mensajes dependa directamente de la velocidad de escritura de la base de datos, se implementó una arquitectura asíncrona basada en una cola (`asyncio.Queue`) y múltiples workers concurrentes.
+
+El objetivo es desacoplar la recepción de eventos de su persistencia, permitiendo procesar varios mensajes simultáneamente y mantener métricas del proceso de ingesta.
+
+### 6.2 Arquitectura del consumidor
+
+La arquitectura implementada sigue el siguiente flujo:
+
+```text
+AISStream.io
+     |
+     | WebSocket
+     v
+Consumidor en tiempo real
+(live_consumer.py)
+     |
+     v
+asyncio.Queue
+     |
+     +----------+----------+
+     |          |          |
+     v          v          v
+  Worker 1   Worker 2   Worker 3
+     |          |          |
+     +----------+----------+
+                |
+                v
+          Cassandra 4.1
+                |
+                v
+          ais.raw_events
+```
+
+Componentes:
+
+| Componente | Función |
+|---|---|
+| AISStream WebSocket | Fuente de eventos AIS en tiempo real. |
+| `live_consumer.py` | Recibe y procesa los mensajes provenientes del stream. |
+| `asyncio.Queue` | Almacena temporalmente los mensajes recibidos antes de su persistencia. |
+| Workers | Ejecutan escrituras concurrentes en Cassandra. |
+| Cassandra | Almacena los eventos recibidos en la tabla `ais.raw_events`. |
+
+La cantidad de workers es configurable mediante parámetros de ejecución.
+
+### 6.3 Modelo de almacenamiento: `ais.raw_events`
+
+Se creó una tabla adicional en el keyspace `ais` para almacenar los mensajes recibidos por el consumidor.
+
+```sql
+CREATE TABLE ais.raw_events (
+    event_day date,
+    event_hour timestamp,
+    shard tinyint,
+    event_id timeuuid,
+    message_type text,
+    mmsi bigint,
+    payload text,
+    received_at timestamp,
+    PRIMARY KEY ((event_day, event_hour, shard), event_id)
+) WITH CLUSTERING ORDER BY (event_id DESC);
+```
+
+**Descripción de los atributos:**
+
+| Atributo | Tipo | Descripción |
+|---|---|---|
+| `event_day` | date | Día correspondiente al evento. |
+| `event_hour` | timestamp | Hora utilizada para organizar los eventos. |
+| `shard` | tinyint | Identificador utilizado para distribuir los registros entre particiones. |
+| `event_id` | timeuuid | Identificador único del evento. |
+| `message_type` | text | Tipo de mensaje AIS recibido. |
+| `mmsi` | bigint | Identificador marítimo de la embarcación. |
+| `payload` | text | Contenido JSON original del mensaje. |
+| `received_at` | timestamp | Fecha y hora de recepción del mensaje. |
+
+**Decisiones de diseño:**
+
+- La clave de partición está compuesta por `event_day`, `event_hour` y `shard`, permitiendo distribuir los eventos por día, hora y partición.
+- `event_id` funciona como clave de ordenamiento dentro de cada partición.
+- Los registros se ordenan de forma descendente mediante `event_id DESC`.
+- Se conserva el contenido original del mensaje en `payload`, manteniendo la información recibida para su posterior procesamiento analítico.
+
+### 6.4 Seguridad y conexión con Cassandra
+
+El consumidor utiliza la infraestructura Cassandra configurada en la Etapa 2.
+
+Se mantienen los mecanismos de autenticación y autorización previamente implementados:
+
+- Autenticación mediante `PasswordAuthenticator`.
+- Autorización mediante `CassandraAuthorizer`.
+- Usuario `ais_ingest` para las operaciones de ingesta.
+- Usuario `ais_admin` para la administración y configuración del esquema.
+- Credenciales almacenadas en `.env`, excluido del control de versiones mediante `.gitignore`.
+
+El consumidor utiliza el usuario de ingesta para conectarse a Cassandra y almacenar los eventos en `ais.raw_events`.
+
+### 6.5 Ejecución del consumidor
+
+Para iniciar el consumidor se utiliza:
+
+```bash
+uv run python scripts/live_consumer.py --duration 60 --workers 4
+```
+
+Parámetros:
+
+| Parámetro | Valor | Descripción |
+|---|---|---|
+| `--duration` | 60 | Duración solicitada de la recepción en segundos. |
+| `--workers` | 4 | Número de workers concurrentes para procesar las escrituras. |
+
+Durante la ejecución se muestran periódicamente las métricas de recepción, encolamiento, persistencia y errores.
+
+Ejemplo:
+
+```text
+Conexión con Cassandra establecida.
+Conectado a AISStream. Recibiendo mensajes...
+
+Recibidos=541 | Encolados=541 | Guardados=540 | Fallidos=0 | En cola=1
+
+Recibidos=1497 | Encolados=1497 | Guardados=1496 | Fallidos=0 | En cola=1
+
+Recepción finalizada. Vaciando la cola...
+
+========== RESUMEN ==========
+Duración:       70.0 s
+Recibidos:      3454
+Encolados:      3454
+Guardados:      3454
+Fallidos:       0
+Control:        0
+Rendimiento:    49.3 escrituras/s
+```
+
+### 6.6 Métricas de ingesta
+
+El consumidor registra las siguientes métricas:
+
+| Métrica | Descripción |
+|---|---|
+| `Recibidos` | Cantidad de mensajes recibidos desde AISStream. |
+| `Encolados` | Cantidad de mensajes agregados a la cola asíncrona. |
+| `Guardados` | Cantidad de mensajes cuya escritura en Cassandra finalizó correctamente. |
+| `Fallidos` | Cantidad de escrituras que no pudieron completarse correctamente. |
+| `Control` | Mensajes de control del protocolo que no corresponden a eventos marítimos. |
+| `En cola` | Cantidad de mensajes pendientes de procesamiento. |
+
+También se calcula el rendimiento de escritura en mensajes por segundo.
+
+La tasa de persistencia se puede expresar como:
+
+\[
+Persistence\ Rate =
+\frac{Guardados}{Recibidos}\times100
+\]
+
+### 6.7 Resultados de la prueba funcional
+
+Se realizó una prueba de recepción en tiempo real utilizando AISStream y cuatro workers concurrentes.
+
+**Configuración de la prueba:**
+
+| Parámetro | Valor |
+|---|---|
+| Fuente de datos | AISStream WebSocket |
+| Duración solicitada | 60 segundos |
+| Workers | 4 |
+| Base de datos | Cassandra 4.1 |
+| Tabla de destino | `ais.raw_events` |
+
+**Resultados obtenidos:**
+
+| Métrica | Resultado |
+|---|---:|
+| Duración total | 70.0 s |
+| Mensajes recibidos | 3,454 |
+| Mensajes encolados | 3,454 |
+| Mensajes guardados | 3,454 |
+| Escrituras fallidas | 0 |
+| Mensajes de control | 0 |
+| Mensajes pendientes al finalizar | 0 |
+| Rendimiento | 49.3 escrituras/s |
+
+**Análisis de resultados:**
+
+- Se recibieron y encolaron 3,454 mensajes durante la prueba.
+- Todos los mensajes encolados fueron procesados y guardados correctamente en Cassandra.
+- No se registraron escrituras fallidas.
+- Durante la recepción se observaron momentos con un mensaje pendiente en la cola, lo que indica que el procesamiento de las escrituras no siempre ocurre exactamente al mismo ritmo que la recepción.
+- Al finalizar la recepción, el consumidor ejecutó el vaciado de la cola y completó las escrituras pendientes.
+
+La tasa de persistencia reportada por el consumidor fue:
+
+\[
+Persistence\ Rate =
+\frac{3454}{3454}\times100 = 100\%
+\]
+
+Por lo tanto, la prueba funcional terminó sin pérdidas reportadas por el consumidor.
+
+### 6.8 Conclusiones de la etapa
+
+Se implementó y validó un consumidor de eventos AIS en tiempo real con persistencia desacoplada en Cassandra.
+
+La utilización de una cola asíncrona y workers concurrentes permite separar la recepción de mensajes de las operaciones de escritura en la base de datos.
+
+La prueba funcional demostró que el sistema pudo recibir y almacenar 3,454 mensajes, sin escrituras fallidas y con una tasa de persistencia reportada del 100 %.
+
+Con estos resultados se considera completada la implementación funcional de la Etapa 3.
+
+Las pruebas de estrés, la comparación de rendimiento con diferentes cantidades de workers y las pruebas de resiliencia ante fallos de nodos quedan como actividades complementarias de evaluación y mejora.
+
+## Pendiente para las siguientes etapas
+
+- Verificación independiente de los registros persistidos mediante consultas de lectura en Cassandra.
+- Benchmark de rendimiento con diferentes cantidades de workers y tasas de entrada.
+- Evaluación de latencia y comportamiento de la cola bajo cargas elevadas.
+- Pruebas de resiliencia ante la caída de nodos de Cassandra.
+- Jobs de limpieza, enriquecimiento con datasets estáticos y transformación a Silver y Gold (Etapa 4).
+- Consultas analíticas y análisis de trazabilidad del dato (Etapa 5).

@@ -9,7 +9,7 @@ from pathlib import Path
 import websockets
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=True)
 
 URL = "wss://stream.aisstream.io/v0/stream"
 DURATION = int(sys.argv[1]) if len(sys.argv) > 1 else 600
